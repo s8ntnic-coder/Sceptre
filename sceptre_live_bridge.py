@@ -1,96 +1,100 @@
 """
-Sceptre Workspace Configuration Target Bridge
-==============================================
-Directly targets the active 3dB Labs SCEPTRE configuration workspace 
-directory path to intercept software tuner adjustments in real-time.
+Sceptre Live Session Monitor Bridge
+====================================
+Directly tracks the live 3dB Labs SCEPTRE active workspace session directory.
+Parses runtime updates automatically to drive real-time video emission math.
 """
 
 import os
 import re
 import time
-from typing import Optional, List
+from typing import Optional, Dict
 from sceptre_video_analyzer import SceptreVideoAnalyzer
 
 
-class SceptreCfgMonitor:
+class SceptreSessionMonitor:
     """
-    Monitors targeted config files in the active SCEPTRE deployment path.
+    Watches file state changes inside SCEPTRE's active session tracking directory.
     """
-    def __init__(self, cfg_dir: str = "/home/dingo1/sceptre/cfg"):
-        self.cfg_dir = cfg_dir
-        self.tracked_files: List[str] = []
-        self.last_mtimes: dict = {}
+    def __init__(self, session_dir: str = "/home/dingo1/sceptre/session/latest"):
+        self.session_dir = session_dir
+        self.last_mtimes: Dict[str, float] = {}
         
-        self._discover_target_files()
-
-    def _discover_target_files(self):
-        """Scans the custom config folder layout for parameter maps."""
-        if not os.path.exists(self.cfg_dir):
-            print(f"[MONITOR ERROR] Directory not found: {self.cfg_dir}")
-            return
-
-        # Dynamically map common files inside the user's specific target config folder
-        potential_files = ["sceptre.cfg", "tuner.cfg", "receiver.cfg", "sceptre.ini", "default.cfg"]
-        
-        print(f"[MONITOR] Inspecting SCEPTRE config workspace layout at: {self.cfg_dir}")
-        for filename in potential_files:
-            full_path = os.path.join(self.cfg_dir, filename)
-            if os.path.exists(full_path):
-                self.tracked_files.append(full_path)
-                self.last_mtimes[full_path] = 0.0
-                print(f"  -> Successfully attached track targeting: {filename}")
-
-        # Dynamic fallback: track all .cfg files in the folder if defaults aren't there
-        if not self.tracked_files:
-            for item in os.listdir(self.cfg_dir):
-                if item.endswith(".cfg") or item.endswith(".ini"):
-                    full_path = os.path.join(self.cfg_dir, item)
-                    self.tracked_files.append(full_path)
-                    self.last_mtimes[full_path] = 0.0
-                    print(f"  -> Dynamic track attached targeting: {item}")
-
-        if not self.tracked_files:
-            print("[MONITOR WARNING] No configuration structures discovered yet inside path folder.")
+        print(f"[MONITOR] Initialising SCEPTRE session monitor target: {self.session_dir}")
+        if not os.path.exists(self.session_dir):
+            print(f"[MONITOR WARNING] Target directory path does not exist yet: {self.session_dir}")
+            print("  -> The script will continuously check for this folder to spin up...")
 
     def get_live_frequency_mhz(self) -> Optional[float]:
         """
-        Scans tracked system files for internal modification state updates.
+        Scans all files inside the session directory for real-time frequency edits.
         """
-        for path in self.tracked_files:
-            if not os.path.exists(path):
-                continue
-                
-            try:
-                current_mtime = os.path.getmtime(path)
-                # Skip reading if the file has not been saved or rewritten
-                if current_mtime == self.last_mtimes[path] and self.last_mtimes[path] != 0.0:
-                    continue
-                    
-                self.last_mtimes[path] = current_mtime
-                
-                with open(path, "r", errors="ignore") as f:
-                    content = f.read()
+        if not os.path.exists(self.session_dir):
+            return None
 
-                # Dynamic regex scanning for standard frequency allocation items
-                freq_match = re.search(r'(?:frequency|center_freq|freq|center_frequency|tuned_freq)\s*[:=]\s*([0-9.]+)', content, re.IGNORECASE)
-                if freq_match:
-                    val = float(freq_match.group(1))
-                    # Handle raw Hz to MHz scale conversions automatically
-                    return val / 1e6 if val > 50000 else val
-                    
-            except Exception as e:
-                print(f"[MONITOR ERROR] Problem accessing configuration state: {e}")
+        try:
+            # Check all items in the session snapshot folder
+            for item in os.listdir(self.session_dir):
+                full_path = os.path.join(self.session_dir, item)
                 
+                # Skip subdirectories or structural socket descriptors
+                if not os.path.isfile(full_path):
+                    continue
+
+                try:
+                    current_mtime = os.path.getmtime(full_path)
+                except OSError:
+                    continue  # Handle temporary lock transitions gracefully
+
+                # Check if this file was created or modified since our last parsing run
+                if full_path not in self.last_mtimes or current_mtime > self.last_mtimes[full_path]:
+                    self.last_mtimes[full_path] = current_mtime
+                    
+                    # Read and analyze the updated file contents
+                    try:
+                        with open(full_path, "r", errors="ignore") as f:
+                            content = f.read()
+                    except IOError:
+                        continue
+
+                    # Regex captures standard tuning fields (e.g., "frequency: 148500000", "center_freq = 148.5")
+                    freq_match = re.search(
+                        r'(?:frequency|center_freq|freq|center_frequency|tuned_freq|cf)\s*[:=]\s*([0-9.]+)', 
+                        content, 
+                        re.IGNORECASE
+                    )
+                    
+                    if freq_match:
+                        val = float(freq_match.group(1))
+                        # Automatically convert raw Hz or kHz units down to the expected MHz scale
+                        if val > 1e6:      # Looks like raw Hz (e.g., 148500000)
+                            return val / 1e6
+                        elif val > 50000:  # Looks like kHz (e.g., 148500)
+                            return val / 1e3
+                        return val
+
+                    # Backup tracker looking for structured XML configuration syntax blocks
+                    xml_match = re.search(r'<(?:frequency|center_freq|freq)>([0-9.]+)</', content, re.IGNORECASE)
+                    if xml_match:
+                        val = float(xml_match.group(1))
+                        if val > 1e6:
+                            return val / 1e6
+                        elif val > 50000:
+                            return val / 1e3
+                        return val
+
+        except Exception as e:
+            print(f"[MONITOR ERROR] Session tracking processing exception: {e}")
+            
         return None
 
 
-def run_targeted_monitor_loop(profile: str = 'standard'):
-    # Targets the exact local user home path verified by your terminal session
-    monitor = SceptreCfgMonitor(cfg_dir="/home/dingo1/sceptre/cfg")
+def run_session_bridge_loop(profile: str = 'standard'):
+    monitor = SceptreSessionMonitor(session_dir="/home/dingo1/sceptre/session/latest")
     analyzer = SceptreVideoAnalyzer(debug=False)
 
     print("\n" + "="*75)
-    print(" 3DB LABS SCEPTRE TO VIDEO EMISSION ANALYZER (CFG TARGET INTERFACE)")
+    print(" 3DB LABS SCEPTRE TO VIDEO EMISSION ANALYZER (LIVE SESSION BRIDGE)")
     print("="*75)
     print("Press Ctrl+C to terminate runtime capturing loops.\n")
 
@@ -99,13 +103,15 @@ def run_targeted_monitor_loop(profile: str = 'standard'):
         while True:
             live_freq = monitor.get_live_frequency_mhz()
             
+            # Trigger updates when a verifiable tuning shift occurs
             if live_freq and abs(live_freq - last_freq) > 0.05:
-                print(f"\n[EVENT] SCEPTRE configuration layout update detected: {live_freq:.3f} MHz")
+                print(f"\n[EVENT] Active SCEPTRE Session Tuner Shift: {live_freq:.3f} MHz")
                 
-                # Run analyzer math calculation blocks
+                # Run the analyzer metrics calculations
                 video_params = analyzer.analyze_frequency(live_freq, blanking_profile=profile)
                 print(analyzer.format_analysis(video_params))
                 
+                # Check for linked emissions harmonics
                 if video_params.detected_harmonics_from_freq:
                     print("\n--> RELATED SUB/HARMONICS TRACKED IN RF PROFILE:")
                     for h in video_params.detected_harmonics_from_freq:
@@ -116,11 +122,11 @@ def run_targeted_monitor_loop(profile: str = 'standard'):
                 
                 last_freq = live_freq
                 
-            time.sleep(1.0) # 1-second cadence polling protects file handles
+            time.sleep(0.5)  # Responsive 500ms cadence window to catch live clicks quickly
             
     except KeyboardInterrupt:
         print("\n[SHUTDOWN] Interrupted by operator loop request.")
 
 
 if __name__ == "__main__":
-    run_targeted_monitor_loop(profile='standard')
+    run_session_bridge_loop(profile='standard')
