@@ -1,39 +1,3 @@
-dingo1@dingo1:~/Documents/Sceptre$ python3 example_usage.py
-Traceback (most recent call last):
-  File "/home/dingo1/Documents/Sceptre/example_usage.py", line 8, in <module>
-    from sceptre_video_analyzer import SceptreVideoAnalyzer, VideoStandard
-  File "/home/dingo1/Documents/Sceptre/sceptre_video_analyzer.py", line 1
-    def _match_standard(self, frequency_mhz: float, blanking_profile: str) -> Optional[VideoParameters]:
-IndentationError: unexpected indent
-dingo1@dingo1:~/Documents/Sceptre$ python3 example_usage.py
-Traceback (most recent call last):
-  File "/home/dingo1/Documents/Sceptre/example_usage.py", line 8, in <module>
-    from sceptre_video_analyzer import SceptreVideoAnalyzer, VideoStandard
-  File "/home/dingo1/Documents/Sceptre/sceptre_video_analyzer.py", line 1
-    def _match_standard(self, frequency_mhz: float, blanking_profile: str) -> Optional[VideoParameters]:
-IndentationError: unexpected indent
-    def _match_standard(self, frequency_mhz: float, blanking_profile: str) -> Optional[VideoParameters]:
-        """Match frequency to known video standard"""
-        for known_freq, (name, width, height, pixel_clock) in self.standards_by_frequency.items():
-            if abs(frequency_mhz - known_freq) <= self.FREQUENCY_TOLERANCE:
-                if self.debug:
-                    print(f"[DEBUG] Matched standard: {name} ({width}x{height})")
-                
-                params = self._calculate_parameters(
-                    frequency_mhz=frequency_mhz,
-                    width=width,
-                    height=height,
-                    pixel_clock_mhz=pixel_clock,
-                    standard_name=name,
-                    is_estimated=False,
-                    blanking_profile=blanking_profile
-                )
-                
-                # Detect harmonics
-                params.detected_harmonics_from_freq = self._detect_harmonics(frequency_mhz)
-                
-                return params
-        return None"""
 Sceptre Video Analyzer - Enhanced Edition (Fixed)
 ==================================================
 A program to interact with Sceptre oscilloscope from 3DB Labs API.
