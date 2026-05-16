@@ -1,118 +1,115 @@
 """
-Sceptre Production Session Data Bridge
-=======================================
-Directly targets 3dB Labs SCEPTRE's runtime session database file.
-Extracts live software tuner center frequencies to drive video emission math.
+Sceptre Real-Time Session XML/JSON Watcher
+==========================================
+Monitors SCEPTRE's volatile text session updates inside /session/latest.
+Extracts real-time mouse drag and tuner clicks instantly without DB write locks.
 """
 
 import os
-import sqlite3
-import shutil
+import re
 import time
-from typing import Optional
+from typing import Optional, Dict
 from sceptre_video_analyzer import SceptreVideoAnalyzer
 
 
-class SceptreSessionDbWatcher:
+class SceptreSessionTextWatcher:
     """
-    Safely captures live software tuner attributes out of SCEPTRE's active session DB.
+    Watches and extracts real-time active tuner parameter values out of 
+    SCEPTRE's transient session runtime files.
     """
     def __init__(self, session_dir: str = "/home/dingo1/sceptre/session/latest"):
         self.session_dir = session_dir
-        self.db_path = None
-        self.temp_db_path = "/tmp/sceptre_production_bridge_tmp.db"
+        self.last_mtimes: Dict[str, float] = {}
         
-        self._locate_database()
-
-    def _locate_database(self):
-        """Locates the active SQLite binary workspace file inside the session folder."""
-        if not os.path.exists(self.session_dir):
-            return
-
-        for item in os.listdir(self.session_dir):
-            full_path = os.path.join(self.session_dir, item)
-            if os.path.isfile(full_path):
-                try:
-                    with open(full_path, "rb") as f:
-                        header = f.read(15)
-                    if b"SQLite format 3" in header:
-                        self.db_path = full_path
-                        print(f"[DB WATCHER] Connected to SCEPTRE Live Database: {item}")
-                        return
-                except IOError:
-                    continue
+        print(f"[MONITOR] Initialising real-time session watcher target: {self.session_dir}")
 
     def get_live_frequency_mhz(self) -> Optional[float]:
         """
-        Takes a transient copy of the active session database file, then queries 
-        the latest 'center_frequency' metric from the intercepts telemetry loop.
+        Scans volatile text parameters files inside the live session folder.
         """
-        if not self.db_path:
-            self._locate_database()
-            if not self.db_path:
-                return None
+        if not os.path.exists(self.session_dir):
+            return None
 
         try:
-            # Create a localized clone block to avoid locking errors while SCEPTRE writes
-            shutil.copy2(self.db_path, self.temp_db_path)
-            
-            conn = sqlite3.connect(self.temp_db_path)
-            cursor = conn.cursor()
-            
-            # Query the newest row sorted by the internal auto-increment tracking column
-            cursor.execute(
-                "SELECT center_frequency FROM intercepts ORDER BY id DESC LIMIT 1"
-            )
-            row = cursor.fetchone()
-            conn.close()
-            
-            if row and row[0] is not None:
-                center_freq = float(row[0])
-                # Automatically normalize values down to MHz if saved in raw Hz notation scale
-                return center_freq / 1e6 if center_freq > 1e6 else center_freq
+            for item in os.listdir(self.session_dir):
+                full_path = os.path.join(self.session_dir, item)
                 
-        except sqlite3.OperationalError:
-            pass  # Suppress lock contentions during active write executions
+                # We want text configuration mappings, skip the binary .db databases
+                if not os.path.isfile(full_path) or item.endswith(".db"):
+                    continue
+
+                try:
+                    current_mtime = os.path.getmtime(full_path)
+                except OSError:
+                    continue
+
+                # Check if SCEPTRE just updated this configuration file
+                if full_path not in self.last_mtimes or current_mtime > self.last_mtimes[full_path]:
+                    self.last_mtimes[full_path] = current_mtime
+                    
+                    try:
+                        with open(full_path, "r", errors="ignore") as f:
+                            content = f.read()
+                    except IOError:
+                        continue
+
+                    # Look for active tuner configurations (accounts for relative tuning structures)
+                    freq_match = re.search(
+                        r'(?:tuner_frequency|input_frequency|frequency|tuned_freq|cf)\s*["\':=]+\s*([0-9.]+)', 
+                        content, 
+                        re.IGNORECASE
+                    )
+                    
+                    if freq_match:
+                        val = float(freq_match.group(1))
+                        # Normalise raw Hz/kHz allocation variables down to MHz scale
+                        if val > 1e6:
+                            return val / 1e6
+                        elif val > 50000:
+                            return val / 1e3
+                        return val
+
+                    # Secondary pass looking for structural XML tags (<tuner_frequency>148500000</tuner_frequency>)
+                    xml_match = re.search(r'<(?:tuner_frequency|frequency|center_freq)>([0-9.]+)</', content, re.IGNORECASE)
+                    if xml_match:
+                        val = float(xml_match.group(1))
+                        if val > 1e6:
+                            return val / 1e6
+                        elif val > 50000:
+                            return val / 1e3
+                        return val
+                        
         except Exception as e:
-            print(f"[DB WATCHER ERROR] Problem parsing session variables: {e}")
+            print(f"[MONITOR ERROR] Session tracking anomaly: {e}")
             
         return None
 
 
-def run_bridge_loop():
-    monitor = SceptreSessionDbWatcher()
+def run_bridge():
+    monitor = SceptreSessionTextWatcher()
     analyzer = SceptreVideoAnalyzer(debug=False)
 
     print("\n" + "="*75)
-    print(" 3DB LABS SCEPTRE TO VIDEO EMISSION ANALYZER (SQLITE SESSION WATCH)")
+    print(" 3DB LABS SCEPTRE TO VIDEO EMISSION ANALYZER (LIVE VOLATILE WATCH)")
     print("="*75)
-    print("Monitoring active hardware data tables... Press Ctrl+C to terminate loops.\n")
+    print("Listening for real-time tuner modifications... Press Ctrl+C to stop.\n")
 
-    # Seed the console output immediately on launch with your verified 148.50 MHz baseline
+    # Drop an instant initialization log down onto your console screen
     last_freq = 148.50
     print(f"[INITIALISATION] Latching onto baseline emission target: {last_freq:.3f} MHz")
     params = analyzer.analyze_frequency(last_freq, blanking_profile='standard')
     print(analyzer.format_analysis(params))
-    
-    if params.detected_harmonics_from_freq:
-        print("\n--> COMPATIBLE HARMONIC EMISSION PROFILE DETECTED:")
-        for h in params.detected_harmonics_from_freq:
-            h_type = "Subharmonic" if h.is_subharmonic else "Harmonic"
-            mult = f"1/{h.harmonic_number}" if h.is_subharmonic else f"{h.harmonic_number}x"
-            mode = h.standard_name if h.standard_name else "Custom Raster Frame"
-            print(f"    * [{h_type}] {mult:<5} at {h.frequency_mhz:>8.2f} MHz -> Matches: {mode}")
 
-    print("\n[STATUS] Listening for active software tuner updates...")
+    print("\n[STATUS] Direct link active. Adjust sliders inside SCEPTRE GUI now...")
     
     while True:
         try:
             live_freq = monitor.get_live_frequency_mhz()
             
-            # Print update statements if the user implements a distinct tune adjustment
             if live_freq and abs(live_freq - last_freq) > 0.01:
                 print(f"\n[EVENT] Active Tuner Variation Intercepted: {live_freq:.3f} MHz")
                 
-                # Forward to timing generation math parameters
+                # Execute timing parameter translations
                 params = analyzer.analyze_frequency(live_freq, blanking_profile='standard')
                 print(analyzer.format_analysis(params))
                 
@@ -126,11 +123,11 @@ def run_bridge_loop():
                         
                 last_freq = live_freq
                 
-            time.sleep(0.4)  # 400ms polling cadences minimize system load
+            time.sleep(0.2)  # Tight 200ms cadence loop ensures hyper-responsive tracking
         except KeyboardInterrupt:
             print("\n[SHUTDOWN] Exiting runtime session tracker loop.")
             break
 
 
 if __name__ == "__main__":
-    run_bridge_loop()
+    run_bridge()
