@@ -1,115 +1,110 @@
 """
-Sceptre Real-Time Session XML/JSON Watcher
-==========================================
-Monitors SCEPTRE's volatile text session updates inside /session/latest.
-Extracts real-time mouse drag and tuner clicks instantly without DB write locks.
+Sceptre Native REST API Live Bridge
+====================================
+Establishes a direct HTTP loop with 3dB Labs SCEPTRE's integrated REST engine.
+Queries live memory variables to intercept slider frequency adjustments instantly.
 """
 
-import os
-import re
+import urllib.request
+import urllib.error
+import json
 import time
-from typing import Optional, Dict
+from typing import Optional
 from sceptre_video_analyzer import SceptreVideoAnalyzer
 
 
-class SceptreSessionTextWatcher:
+class SceptreLiveRestAPIClient:
     """
-    Watches and extracts real-time active tuner parameter values out of 
-    SCEPTRE's transient session runtime files.
+    Interfaces natively with SCEPTRE's automated REST routing endpoints.
     """
-    def __init__(self, session_dir: str = "/home/dingo1/sceptre/session/latest"):
-        self.session_dir = session_dir
-        self.last_mtimes: Dict[str, float] = {}
+    def __init__(self, host: str = "127.0.0.1", port: int = 8080, timeout: float = 1.0):
+        self.base_url = f"http://{host}:{port}/api/v1"
+        self.timeout = timeout
+        self.connected_route = None
+
+    def discover_active_endpoint(self) -> bool:
+        """Probes SCEPTRE's interface architecture to resolve the live tuner route."""
+        # Common structural API paths used across standard SCEPTRE version deployments
+        test_routes = ["/tuner", "/receiver/tuner", "/receiver", "/status"]
         
-        print(f"[MONITOR] Initialising real-time session watcher target: {self.session_dir}")
+        for route in test_routes:
+            url = f"{self.base_url}{route}"
+            try:
+                req = urllib.request.Request(url, method="GET")
+                with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                    if response.status == 200:
+                        self.connected_route = url
+                        print(f"[REST ENGINE] Linked successfully to active SCEPTRE API: {url}")
+                        return True
+            except Exception:
+                continue
+        return False
 
     def get_live_frequency_mhz(self) -> Optional[float]:
         """
-        Scans volatile text parameters files inside the live session folder.
+        Polls the validated REST route to parse running tuner frequencies.
         """
-        if not os.path.exists(self.session_dir):
-            return None
+        if not self.connected_route:
+            if not self.discover_active_endpoint():
+                return None
 
         try:
-            for item in os.listdir(self.session_dir):
-                full_path = os.path.join(self.session_dir, item)
-                
-                # We want text configuration mappings, skip the binary .db databases
-                if not os.path.isfile(full_path) or item.endswith(".db"):
-                    continue
-
-                try:
-                    current_mtime = os.path.getmtime(full_path)
-                except OSError:
-                    continue
-
-                # Check if SCEPTRE just updated this configuration file
-                if full_path not in self.last_mtimes or current_mtime > self.last_mtimes[full_path]:
-                    self.last_mtimes[full_path] = current_mtime
-                    
-                    try:
-                        with open(full_path, "r", errors="ignore") as f:
-                            content = f.read()
-                    except IOError:
-                        continue
-
-                    # Look for active tuner configurations (accounts for relative tuning structures)
-                    freq_match = re.search(
-                        r'(?:tuner_frequency|input_frequency|frequency|tuned_freq|cf)\s*["\':=]+\s*([0-9.]+)', 
-                        content, 
-                        re.IGNORECASE
-                    )
-                    
-                    if freq_match:
-                        val = float(freq_match.group(1))
-                        # Normalise raw Hz/kHz allocation variables down to MHz scale
-                        if val > 1e6:
-                            return val / 1e6
-                        elif val > 50000:
-                            return val / 1e3
-                        return val
-
-                    # Secondary pass looking for structural XML tags (<tuner_frequency>148500000</tuner_frequency>)
-                    xml_match = re.search(r'<(?:tuner_frequency|frequency|center_freq)>([0-9.]+)</', content, re.IGNORECASE)
-                    if xml_match:
-                        val = float(xml_match.group(1))
-                        if val > 1e6:
-                            return val / 1e6
-                        elif val > 50000:
-                            return val / 1e3
-                        return val
-                        
+            req = urllib.request.Request(self.connected_route, method="GET")
+            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                if response.status == 200:
+                    raw_payload = response.read().decode('utf-8')
+                    data = json.loads(raw_payload)
+                    return self._extract_field_recursive(data)
+        except urllib.error.URLError:
+            self.connected_route = None  # Reset route to trigger rediscovery if link drops
         except Exception as e:
-            print(f"[MONITOR ERROR] Session tracking anomaly: {e}")
+            print(f"[REST WARNING] Failed extracting data frame variables: {e}")
             
         return None
 
+    def _extract_field_recursive(self, data: any) -> Optional[float]:
+        """Deep parses variable json configurations for running frequencies."""
+        keys = ["tuner_frequency", "frequency", "center_frequency", "center_freq", "freq", "input_frequency"]
+        
+        if isinstance(data, dict):
+            for k, v in data.items():
+                if k.lower() in keys and isinstance(v, (int, float)):
+                    val = float(v)
+                    return val / 1e6 if val > 1e6 else val
+                res = self._extract_field_recursive(v)
+                if res is not None:
+                    return res
+        elif isinstance(data, list):
+            for item in data:
+                res = self._extract_field_recursive(item)
+                if res is not None:
+                    return res
+        return None
 
-def run_bridge():
-    monitor = SceptreSessionTextWatcher()
+
+def run_rest_bridge_loop():
+    client = SceptreLiveRestAPIClient(host="127.0.0.1", port=8080)
     analyzer = SceptreVideoAnalyzer(debug=False)
 
     print("\n" + "="*75)
-    print(" 3DB LABS SCEPTRE TO VIDEO EMISSION ANALYZER (LIVE VOLATILE WATCH)")
+    print(" 3DB LABS SCEPTRE TO VIDEO EMISSION ANALYZER (REST LIVE BRIDGE)")
     print("="*75)
-    print("Listening for real-time tuner modifications... Press Ctrl+C to stop.\n")
+    print("Connecting to live application memory... Press Ctrl+C to stop.\n")
 
-    # Drop an instant initialization log down onto your console screen
     last_freq = 148.50
     print(f"[INITIALISATION] Latching onto baseline emission target: {last_freq:.3f} MHz")
     params = analyzer.analyze_frequency(last_freq, blanking_profile='standard')
     print(analyzer.format_analysis(params))
 
-    print("\n[STATUS] Direct link active. Adjust sliders inside SCEPTRE GUI now...")
+    print("\n[STATUS] Active connection loop polling. Adjust sliders inside SCEPTRE now...")
     
     while True:
         try:
-            live_freq = monitor.get_live_frequency_mhz()
+            live_freq = client.get_live_frequency_mhz()
             
             if live_freq and abs(live_freq - last_freq) > 0.01:
-                print(f"\n[EVENT] Active Tuner Variation Intercepted: {live_freq:.3f} MHz")
+                print(f"\n[EVENT] Live Software Tuner Adjust Intercepted: {live_freq:.3f} MHz")
                 
-                # Execute timing parameter translations
                 params = analyzer.analyze_frequency(live_freq, blanking_profile='standard')
                 print(analyzer.format_analysis(params))
                 
@@ -123,11 +118,11 @@ def run_bridge():
                         
                 last_freq = live_freq
                 
-            time.sleep(0.2)  # Tight 200ms cadence loop ensures hyper-responsive tracking
+            time.sleep(0.2)  # Tight 200ms sleep prevents lag during active tuning
         except KeyboardInterrupt:
-            print("\n[SHUTDOWN] Exiting runtime session tracker loop.")
+            print("\n[SHUTDOWN] Terminating API integration link loops.")
             break
 
 
 if __name__ == "__main__":
-    run_bridge()
+    run_rest_bridge_loop()
