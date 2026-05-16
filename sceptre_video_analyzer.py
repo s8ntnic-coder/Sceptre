@@ -1,4 +1,25 @@
-"""
+    def _match_standard(self, frequency_mhz: float, blanking_profile: str) -> Optional[VideoParameters]:
+        """Match frequency to known video standard"""
+        for known_freq, (name, width, height, pixel_clock) in self.standards_by_frequency.items():
+            if abs(frequency_mhz - known_freq) <= self.FREQUENCY_TOLERANCE:
+                if self.debug:
+                    print(f"[DEBUG] Matched standard: {name} ({width}x{height})")
+                
+                params = self._calculate_parameters(
+                    frequency_mhz=frequency_mhz,
+                    width=width,
+                    height=height,
+                    pixel_clock_mhz=pixel_clock,
+                    standard_name=name,
+                    is_estimated=False,
+                    blanking_profile=blanking_profile
+                )
+                
+                # Detect harmonics
+                params.detected_harmonics_from_freq = self._detect_harmonics(frequency_mhz)
+                
+                return params
+        return None"""
 Sceptre Video Analyzer - Enhanced Edition (Fixed)
 ==================================================
 A program to interact with Sceptre oscilloscope from 3DB Labs API.
@@ -524,7 +545,7 @@ class SceptreVideoAnalyzer:
         
         return params
 
-    def _match_standard(self, frequency_mhz: float, blanking_profile: str) -> Optional[VideoParameters]:
+        def _match_standard(self, frequency_mhz: float, blanking_profile: str) -> Optional[VideoParameters]:
         """Match frequency to known video standard"""
         for known_freq, (name, width, height, pixel_clock) in self.standards_by_frequency.items():
             if abs(frequency_mhz - known_freq) <= self.FREQUENCY_TOLERANCE:
@@ -543,6 +564,30 @@ class SceptreVideoAnalyzer:
                 
                 # Detect harmonics
                 params.detected_harmonics_from_freq = self._detect_harmonics(frequency_mhz)
+                
+                return params
+        return Nonedef _match_standard(self, frequency_mhz: float, blanking_profile: str, is_harmonic_check: bool = False) -> Optional[VideoParameters]:
+        """Match frequency to known video standard with an explicit recursion guard flag."""
+        for known_freq, (name, width, height, pixel_clock) in self.standards_by_frequency.items():
+            if abs(frequency_mhz - known_freq) <= self.FREQUENCY_TOLERANCE:
+                if self.debug:
+                    print(f"[DEBUG] Matched standard: {name} ({width}x{height})")
+                
+                params = self._calculate_parameters(
+                    frequency_mhz=frequency_mhz,
+                    width=width,
+                    height=height,
+                    pixel_clock_mhz=pixel_clock,
+                    standard_name=name,
+                    is_estimated=False,
+                    blanking_profile=blanking_profile
+                )
+                
+                # RECURSION GUARD: Only evaluate deep harmonics if we aren't already evaluating one
+                if not is_harmonic_check:
+                    params.detected_harmonics_from_freq = self._detect_harmonics(frequency_mhz, blanking_profile)
+                else:
+                    params.detected_harmonics_from_freq = []
                 
                 return params
         return None
@@ -664,49 +709,36 @@ class SceptreVideoAnalyzer:
             blanking=blanking
         )
 
-    def _detect_harmonics(self, frequency_mhz: float, max_harmonic: int = 10) -> List[Harmonic]:
-        """
-        Detect harmonics and subharmonics of a frequency.
+     def _detect_harmonics(self, frequency_mhz: float, blanking_profile: str = 'standard') -> List[Harmonic]:
+        """Identifies integer harmonics (2x-10x) and fractional subharmonics safely."""
+        harmonics_list = []
         
-        Args:
-            frequency_mhz: Base frequency in MHz
-            max_harmonic: Maximum harmonic order to check
-            
-        Returns:
-            List of detected harmonics matching known video standards
-        """
-        harmonics = []
-        
-        # Check harmonics (2x, 3x, etc.)
-        for n in range(2, max_harmonic + 1):
-            harmonic_freq = frequency_mhz * n
-            matched = self._match_standard(harmonic_freq, 'standard')
+        # 2x up to 10x Harmonics
+        for mult in range(2, 11):
+            h_freq = frequency_mhz * mult
+            # FORCE is_harmonic_check using explicit keyword argument assignment
+            matched = self._match_standard(h_freq, blanking_profile, is_harmonic_check=True)
             if matched:
-                harmonics.append(Harmonic(
-                    harmonic_number=float(n),
-                    frequency_mhz=harmonic_freq,
-                    is_subharmonic=False,
-                    parent_frequency_mhz=frequency_mhz,
-                    estimated_parameters=matched,
+                harmonics_list.append(Harmonic(
+                    harmonic_number=float(mult), frequency_mhz=h_freq, is_subharmonic=False,
+                    parent_frequency_mhz=frequency_mhz, estimated_parameters=matched,
                     standard_name=matched.standard_name
                 ))
-        
-        # Check subharmonics (1/2, 1/3, etc.)
-        for n in range(2, max_harmonic + 1):
-            subharmonic_freq = frequency_mhz / n
-            matched = self._match_standard(subharmonic_freq, 'standard')
-            if matched:
-                harmonics.append(Harmonic(
-                    harmonic_number=float(n),
-                    frequency_mhz=subharmonic_freq,
-                    is_subharmonic=True,
-                    parent_frequency_mhz=frequency_mhz,
-                    estimated_parameters=matched,
-                    standard_name=matched.standard_name
-                ))
-        
-        return harmonics
 
+        # 1/2 down to 1/10 Subharmonics
+        for div in range(2, 11):
+            sub_freq = frequency_mhz / div
+            # FORCE is_harmonic_check using explicit keyword argument assignment
+            matched = self._match_standard(sub_freq, blanking_profile, is_harmonic_check=True)
+            if matched:
+                harmonics_list.append(Harmonic(
+                    harmonic_number=round(1.0 / div, 3), frequency_mhz=sub_freq, is_subharmonic=True,
+                    parent_frequency_mhz=frequency_mhz, estimated_parameters=matched,
+                    standard_name=matched.standard_name
+                ))
+
+        return harmonics_list
+     
     def calculate_bandwidth_requirements(self, params: VideoParameters) -> Dict[str, float]:
         """
         Calculate HDMI/DVI bandwidth requirements.
