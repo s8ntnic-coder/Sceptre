@@ -1,8 +1,13 @@
 """
-Sceptre Video Analyzer
-=====================
+Sceptre Video Analyzer - Enhanced Edition
+==========================================
 A program to interact with Sceptre oscilloscope from 3DB Labs API.
 Converts frequency tuning to video emission parameters (HDMI/DVI cables).
+
+Now includes:
+- Detailed blanking interval analysis (accounts for video card variations)
+- Harmonic detection (2x-10x harmonics and subharmonics)
+- Multiple blanking profiles (minimal, standard, extended)
 
 Calculates:
 - Video resolution
@@ -10,9 +15,11 @@ Calculates:
 - Scanline time
 - Frame rate
 - Frame duration
+- Blanking intervals (horizontal and vertical)
+- Detected harmonics and subharmonics
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 import math
 from enum import Enum
@@ -40,6 +47,38 @@ class VideoStandard(Enum):
 
 
 @dataclass
+class BlankingParameters:
+    """Blanking interval details for video signal"""
+    # Horizontal blanking (in pixels)
+    h_front_porch_pixels: int = 0
+    h_sync_pixels: int = 0
+    h_back_porch_pixels: int = 0
+    h_total_blanking: int = 0
+    h_blanking_percent: float = 0.0
+    
+    # Vertical blanking (in lines)
+    v_front_porch_lines: int = 0
+    v_sync_lines: int = 0
+    v_back_porch_lines: int = 0
+    v_total_blanking: int = 0
+    v_blanking_percent: float = 0.0
+    
+    # Profile used for calculation
+    profile_name: str = "standard"
+
+
+@dataclass
+class Harmonic:
+    """Detected harmonic or subharmonic of a frequency"""
+    harmonic_number: float  # 2, 3, 1/2, 1/3, etc.
+    frequency_mhz: float
+    is_subharmonic: bool
+    parent_frequency_mhz: float
+    estimated_parameters: Optional['VideoParameters'] = None
+    standard_name: Optional[str] = None
+
+
+@dataclass
 class VideoParameters:
     """Calculated video parameters from frequency analysis"""
     frequency_mhz: float
@@ -56,21 +95,47 @@ class VideoParameters:
     total_pixels_per_frame: int = 0
     horizontal_pixels_total: int = 0
     vertical_lines_total: int = 0
+    blanking: BlankingParameters = field(default_factory=BlankingParameters)
+    detected_harmonics_from_freq: List[Harmonic] = field(default_factory=list)
 
 
 class SceptreVideoAnalyzer:
     """
     Main analyzer for converting Sceptre frequency to video parameters.
     Supports HDMI, DVI, and VGA standards.
+    Includes harmonic detection and blanking interval analysis.
     """
 
     # HDMI/DVI frequency tolerance (MHz)
     FREQUENCY_TOLERANCE = 2.0
 
-    # CVT-R2 (Coordinated Video Timings Revision 2) constants
-    CVT_H_SYNC_PERCENT = 0.08
-    CVT_V_SYNC_PERCENT = 0.1
-    CVT_MIN_V_PORCH = 3
+    # Blanking profiles for different video card implementations
+    BLANKING_PROFILES = {
+        'minimal': {
+            'h_front_porch_percent': 0.03,
+            'h_sync_percent': 0.04,
+            'h_back_porch_percent': 0.04,
+            'v_front_porch_percent': 0.01,
+            'v_sync_percent': 0.04,
+            'v_back_porch_percent': 0.02,
+        },
+        'standard': {
+            'h_front_porch_percent': 0.04,
+            'h_sync_percent': 0.05,
+            'h_back_porch_percent': 0.08,
+            'v_front_porch_percent': 0.01,
+            'v_sync_percent': 0.05,
+            'v_back_porch_percent': 0.04,
+        },
+        'extended': {
+            'h_front_porch_percent': 0.05,
+            'h_sync_percent': 0.06,
+            'h_back_porch_percent': 0.10,
+            'v_front_porch_percent': 0.015,
+            'v_sync_percent': 0.06,
+            'v_back_porch_percent': 0.055,
+        },
+    }
 
     def __init__(self, debug: bool = False):
         """
@@ -96,45 +161,60 @@ class SceptreVideoAnalyzer:
                 freq
             )
 
-    def analyze_frequency(self, frequency_mhz: float) -> VideoParameters:
+    def analyze_frequency(self, frequency_mhz: float, blanking_profile: str = 'standard') -> VideoParameters:
         """
         Analyze a frequency and calculate video parameters.
         
         Args:
             frequency_mhz: Sceptre tuned frequency in MHz
+            blanking_profile: Blanking profile ('minimal', 'standard', 'extended')
             
         Returns:
             VideoParameters object with calculated values
         """
+        if blanking_profile not in self.BLANKING_PROFILES:
+            raise ValueError(f"Invalid blanking profile: {blanking_profile}")
+        
         if self.debug:
-            print(f"[DEBUG] Analyzing frequency: {frequency_mhz} MHz")
+            print(f"[DEBUG] Analyzing frequency: {frequency_mhz} MHz (blanking: {blanking_profile})")
 
         # Try to match known standard
-        standard = self._match_standard(frequency_mhz)
+        standard = self._match_standard(frequency_mhz, blanking_profile)
         if standard:
             return standard
 
         # Estimate parameters using CVT-R2
-        return self._estimate_cvt_r2(frequency_mhz)
+        params = self._estimate_cvt_r2(frequency_mhz, blanking_profile)
+        
+        # Detect harmonics
+        params.detected_harmonics_from_freq = self._detect_harmonics(frequency_mhz)
+        
+        return params
 
-    def _match_standard(self, frequency_mhz: float) -> Optional[VideoParameters]:
+    def _match_standard(self, frequency_mhz: float, blanking_profile: str) -> Optional[VideoParameters]:
         """Match frequency to known video standard"""
         for known_freq, (name, width, height, pixel_clock) in self.standards_by_frequency.items():
             if abs(frequency_mhz - known_freq) <= self.FREQUENCY_TOLERANCE:
                 if self.debug:
                     print(f"[DEBUG] Matched standard: {name} ({width}x{height})")
                 
-                return self._calculate_parameters(
+                params = self._calculate_parameters(
                     frequency_mhz=frequency_mhz,
                     width=width,
                     height=height,
                     pixel_clock_mhz=pixel_clock,
                     standard_name=name,
-                    is_estimated=False
+                    is_estimated=False,
+                    blanking_profile=blanking_profile
                 )
+                
+                # Detect harmonics
+                params.detected_harmonics_from_freq = self._detect_harmonics(frequency_mhz)
+                
+                return params
         return None
 
-    def _estimate_cvt_r2(self, frequency_mhz: float) -> VideoParameters:
+    def _estimate_cvt_r2(self, frequency_mhz: float, blanking_profile: str) -> VideoParameters:
         """
         Estimate video parameters using CVT-R2 algorithm.
         
@@ -145,30 +225,17 @@ class SceptreVideoAnalyzer:
         if self.debug:
             print(f"[DEBUG] Estimating parameters using CVT-R2 for {frequency_mhz} MHz")
 
-        # Estimate based on common aspect ratios and refresh rates
-        # For a given pixel clock, estimate resolution
-        
-        # Typical frame rate range for video
         estimated_frame_rate = 60.0  # Hz (common assumption)
-        
-        # Total pixels per frame ≈ (pixel_clock_MHz * 1e6) / frame_rate_hz
         pixel_clock_hz = frequency_mhz * 1e6
         total_pixels = pixel_clock_hz / estimated_frame_rate
         
-        # Assume 16:9 aspect ratio with standard CVT blanking
-        # Horizontal blanking ~ 20%, vertical blanking ~ 10%
         active_pixels_percent = 0.80
-        active_lines_percent = 0.90
-        
         active_pixels = total_pixels * active_pixels_percent
         
-        # Estimate width from aspect ratio 16:9
         width = int(math.sqrt(active_pixels * (16 / 9)))
-        # Round to nearest 8
         width = (width // 8) * 8
         
         height = int(width * 9 / 16)
-        # Round to nearest 2
         height = (height // 2) * 2
         
         return self._calculate_parameters(
@@ -178,7 +245,8 @@ class SceptreVideoAnalyzer:
             pixel_clock_mhz=frequency_mhz,
             standard_name=None,
             is_estimated=True,
-            estimated_method="CVT-R2 16:9"
+            estimated_method="CVT-R2 16:9",
+            blanking_profile=blanking_profile
         )
 
     def _calculate_parameters(
@@ -189,30 +257,53 @@ class SceptreVideoAnalyzer:
         pixel_clock_mhz: float,
         standard_name: Optional[str] = None,
         is_estimated: bool = False,
-        estimated_method: Optional[str] = None
+        estimated_method: Optional[str] = None,
+        blanking_profile: str = 'standard'
     ) -> VideoParameters:
         """Calculate all video parameters from base values"""
         
         pixel_clock_hz = pixel_clock_mhz * 1e6
         pixel_rate_hz = int(pixel_clock_hz)
         
-        # Standard timing assumptions
-        # Horizontal: Add ~25% for front porch, sync, back porch
-        h_total = int(width * 1.25)
+        # Calculate blanking parameters based on profile
+        profile = self.BLANKING_PROFILES[blanking_profile]
         
-        # Vertical: Add ~10% for front porch, sync, back porch  
-        v_total = int(height * 1.10)
+        # Horizontal blanking
+        h_front_porch = int(width * profile['h_front_porch_percent'])
+        h_sync = int(width * profile['h_sync_percent'])
+        h_back_porch = int(width * profile['h_back_porch_percent'])
+        h_total_blanking = h_front_porch + h_sync + h_back_porch
+        h_total = width + h_total_blanking
+        h_blanking_percent = (h_total_blanking / h_total) * 100
         
-        # Scanline time = h_total / pixel_clock_hz (in seconds)
+        # Vertical blanking
+        v_front_porch = max(1, int(height * profile['v_front_porch_percent']))
+        v_sync = max(1, int(height * profile['v_sync_percent']))
+        v_back_porch = max(1, int(height * profile['v_back_porch_percent']))
+        v_total_blanking = v_front_porch + v_sync + v_back_porch
+        v_total = height + v_total_blanking
+        v_blanking_percent = (v_total_blanking / v_total) * 100
+        
+        # Timing calculations
         scanline_time_us = (h_total / pixel_clock_hz) * 1e6
-        
-        # Frame time = (h_total * v_total) / pixel_clock_hz
         frame_time_us = (h_total * v_total / pixel_clock_hz) * 1e6
-        
-        # Frame rate = pixel_clock_hz / (h_total * v_total)
         frame_rate_hz = pixel_clock_hz / (h_total * v_total)
-        
         total_pixels_per_frame = h_total * v_total
+        
+        # Create blanking parameters object
+        blanking = BlankingParameters(
+            h_front_porch_pixels=h_front_porch,
+            h_sync_pixels=h_sync,
+            h_back_porch_pixels=h_back_porch,
+            h_total_blanking=h_total_blanking,
+            h_blanking_percent=h_blanking_percent,
+            v_front_porch_lines=v_front_porch,
+            v_sync_lines=v_sync,
+            v_back_porch_lines=v_back_porch,
+            v_total_blanking=v_total_blanking,
+            v_blanking_percent=v_blanking_percent,
+            profile_name=blanking_profile
+        )
         
         if self.debug:
             print(f"[DEBUG] Parameters calculated:")
@@ -236,8 +327,52 @@ class SceptreVideoAnalyzer:
             estimated_method=estimated_method,
             total_pixels_per_frame=total_pixels_per_frame,
             horizontal_pixels_total=h_total,
-            vertical_lines_total=v_total
+            vertical_lines_total=v_total,
+            blanking=blanking
         )
+
+    def _detect_harmonics(self, frequency_mhz: float, max_harmonic: int = 10) -> List[Harmonic]:
+        """
+        Detect harmonics and subharmonics of a frequency.
+        
+        Args:
+            frequency_mhz: Base frequency in MHz
+            max_harmonic: Maximum harmonic order to check
+            
+        Returns:
+            List of detected harmonics matching known video standards
+        """
+        harmonics = []
+        
+        # Check harmonics (2x, 3x, etc.)
+        for n in range(2, max_harmonic + 1):
+            harmonic_freq = frequency_mhz * n
+            matched = self._match_standard(harmonic_freq, 'standard')
+            if matched:
+                harmonics.append(Harmonic(
+                    harmonic_number=float(n),
+                    frequency_mhz=harmonic_freq,
+                    is_subharmonic=False,
+                    parent_frequency_mhz=frequency_mhz,
+                    estimated_parameters=matched,
+                    standard_name=matched.standard_name
+                ))
+        
+        # Check subharmonics (1/2, 1/3, etc.)
+        for n in range(2, max_harmonic + 1):
+            subharmonic_freq = frequency_mhz / n
+            matched = self._match_standard(subharmonic_freq, 'standard')
+            if matched:
+                harmonics.append(Harmonic(
+                    harmonic_number=float(n),
+                    frequency_mhz=subharmonic_freq,
+                    is_subharmonic=True,
+                    parent_frequency_mhz=frequency_mhz,
+                    estimated_parameters=matched,
+                    standard_name=matched.standard_name
+                ))
+        
+        return harmonics
 
     def calculate_bandwidth_requirements(self, params: VideoParameters) -> Dict[str, float]:
         """
@@ -249,17 +384,12 @@ class SceptreVideoAnalyzer:
         Returns:
             Dictionary with bandwidth calculations
         """
-        # HDMI/DVI bandwidth = pixel_clock * bits_per_pixel / 8
-        # Standard: 24-bit color (8-bit per channel RGB)
-        
         bits_per_pixel = 24
         pixel_clock_hz = params.pixel_clock_mhz * 1e6
         
-        # Raw bandwidth
         raw_bandwidth_bps = pixel_clock_hz * bits_per_pixel
         raw_bandwidth_gbps = raw_bandwidth_bps / 1e9
         
-        # HDMI 1.4 uses TMDS encoding (8b/10b) = 1.25x overhead
         tmds_bandwidth_gbps = raw_bandwidth_gbps * 1.25
         
         return {
@@ -282,9 +412,9 @@ class SceptreVideoAnalyzer:
             Formatted analysis string
         """
         output = []
-        output.append("=" * 60)
+        output.append("=" * 70)
         output.append("SCEPTRE VIDEO ANALYSIS RESULTS")
-        output.append("=" * 60)
+        output.append("=" * 70)
         output.append(f"Sceptre Frequency: {params.frequency_mhz} MHz")
         output.append("")
         
@@ -297,14 +427,14 @@ class SceptreVideoAnalyzer:
         output.append("")
         
         output.append("VIDEO PARAMETERS")
-        output.append("-" * 60)
+        output.append("-" * 70)
         output.append(f"Resolution:          {params.resolution_width}x{params.resolution_height}")
         output.append(f"Pixel Clock:         {params.pixel_clock_mhz} MHz")
         output.append(f"Pixel Rate:          {params.pixel_rate_hz:,} Hz")
         output.append("")
         
         output.append("TIMING")
-        output.append("-" * 60)
+        output.append("-" * 70)
         output.append(f"H-Total (pixels):    {params.horizontal_pixels_total}")
         output.append(f"V-Total (lines):     {params.vertical_lines_total}")
         output.append(f"Scanline Time:       {params.scanline_time_us:.4f} µs")
@@ -313,9 +443,22 @@ class SceptreVideoAnalyzer:
         output.append(f"Total Pixels/Frame:  {params.total_pixels_per_frame:,}")
         output.append("")
         
+        output.append("BLANKING INTERVALS")
+        output.append("-" * 70)
+        output.append(f"Profile: {params.blanking.profile_name.upper()}")
+        output.append(f"Horizontal Blanking: {params.blanking.h_total_blanking} pixels ({params.blanking.h_blanking_percent:.2f}%)")
+        output.append(f"  Front Porch: {params.blanking.h_front_porch_pixels}px | "
+                      f"Sync: {params.blanking.h_sync_pixels}px | "
+                      f"Back Porch: {params.blanking.h_back_porch_pixels}px")
+        output.append(f"Vertical Blanking:   {params.blanking.v_total_blanking} lines ({params.blanking.v_blanking_percent:.2f}%)")
+        output.append(f"  Front Porch: {params.blanking.v_front_porch_lines}ln | "
+                      f"Sync: {params.blanking.v_sync_lines}ln | "
+                      f"Back Porch: {params.blanking.v_back_porch_lines}ln")
+        output.append("")
+        
         bandwidth = self.calculate_bandwidth_requirements(params)
         output.append("BANDWIDTH REQUIREMENTS")
-        output.append("-" * 60)
+        output.append("-" * 70)
         output.append(f"Raw Bandwidth:       {bandwidth['raw_bandwidth_gbps']:.2f} Gbps")
         output.append(f"TMDS Bandwidth:      {bandwidth['tmds_bandwidth_gbps']:.2f} Gbps")
         output.append("")
@@ -325,10 +468,20 @@ class SceptreVideoAnalyzer:
         output.append(f"HDMI 2.1 (48.0 Gbps):  {'✓ YES' if bandwidth['hdmi_2_1_compatible'] else '✗ NO'}")
         output.append("")
         
+        if params.detected_harmonics_from_freq:
+            output.append("DETECTED HARMONICS")
+            output.append("-" * 70)
+            for harmonic in params.detected_harmonics_from_freq:
+                h_type = "Subharmonic" if harmonic.is_subharmonic else "Harmonic"
+                multiplier = f"1/{int(harmonic.harmonic_number)}" if harmonic.is_subharmonic else f"{int(harmonic.harmonic_number)}x"
+                mode = harmonic.standard_name if harmonic.standard_name else "Unknown"
+                output.append(f"{h_type:12} {multiplier:8} → {harmonic.frequency_mhz:10.2f} MHz → {mode}")
+            output.append("")
+        
         if params.is_estimated:
             output.append("⚠ NOTE: Parameters are estimated. Accuracy depends on actual signal.")
         
-        output.append("=" * 60)
+        output.append("=" * 70)
         
         return "\n".join(output)
 
@@ -353,10 +506,6 @@ class SceptreAPIClient:
         """Connect to Sceptre hardware"""
         try:
             # TODO: Implement actual 3DB Labs API connection
-            # This would typically use:
-            # - USB communication via pyusb
-            # - Network socket to Sceptre server
-            # - Serial communication via pyserial
             self.connected = True
             return True
         except Exception as e:
@@ -377,11 +526,6 @@ class SceptreAPIClient:
         if not self.connected:
             return None
         
-        # TODO: Implement actual API call to read frequency
-        # Example command structure:
-        # response = self.send_command("GET_FREQUENCY")
-        # return float(response) / 1e6  # Convert Hz to MHz
-        
         return None
 
     def set_frequency(self, frequency_mhz: float) -> bool:
@@ -397,11 +541,6 @@ class SceptreAPIClient:
         if not self.connected:
             return False
         
-        # TODO: Implement actual API call to set frequency
-        # Example command structure:
-        # frequency_hz = int(frequency_mhz * 1e6)
-        # self.send_command(f"SET_FREQUENCY {frequency_hz}")
-        
         return False
 
     def send_command(self, command: str) -> str:
@@ -414,6 +553,4 @@ class SceptreAPIClient:
         Returns:
             Response from device
         """
-        # TODO: Implement actual communication protocol
-        # This depends on 3DB Labs API documentation
         return ""
