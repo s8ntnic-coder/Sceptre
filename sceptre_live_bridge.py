@@ -1,103 +1,139 @@
 """
-Sceptre Live HTTP Bridge
-=========================
-Connects to 3dB Labs SCEPTRE using its native REST API endpoint.
-Polls the active tuner center frequency and feeds it to the video analyzer.
+Sceptre Adaptive Live HTTP Bridge
+==================================
+Queries 3dB Labs SCEPTRE REST API structures adaptively.
+Extracts receiver tuner metrics dynamically and forwards to video analyzer.
 """
 
 import urllib.request
 import urllib.error
 import json
 import time
-import sys
-from typing import Optional
+from typing import Optional, List, Dict
 from sceptre_video_analyzer import SceptreVideoAnalyzer
 
 
-class LiveSceptreClient:
+class AdaptiveSceptreClient:
     """
-    Communicates with a 3dB Labs SCEPTRE instance via its native REST API.
+    Connects to 3dB Labs SCEPTRE software across varied REST API layout designs.
     """
     def __init__(self, host: str = "127.0.0.1", port: int = 8080, timeout: float = 2.0):
-        # SCEPTRE HTTP interfaces defaults vary, common ports are 8080 or 5000
-        self.base_url = f"http://{host}:{port}/api/v1"
+        self.host = host
+        self.port = port
         self.timeout = timeout
-        self.is_connected = False
-
-    def test_connection(self) -> bool:
-        """Verifies the SCEPTRE API endpoint is responsive."""
-        try:
-            # Poll the system status endpoint
-            url = f"{self.base_url}/status"
-            with urllib.request.urlopen(url, timeout=self.timeout) as response:
-                if response.status == 200:
-                    print(f"[LIVE] Successfully verified SCEPTRE REST API at {self.base_url}")
-                    self.is_connected = True
-                    return True
-        except urllib.error.URLError as e:
-            print(f"[LIVE ERROR] Cannot connect to SCEPTRE REST API: {e.reason}")
-            print("  -> Ensure SCEPTRE is running and the REST API plugin is enabled.")
-        except Exception as e:
-            print(f"[LIVE ERROR] Connection anomaly: {e}")
+        self.base_url = f"http://{host}:{port}"
+        self.validated_endpoint: Optional[str] = None
         
-        self.is_connected = False
+        # Matrix of known 3dB Labs API endpoint layout variants
+        self.candidate_paths = [
+            "/api/v1/receiver/tuner",
+            "/api/v1/tuner",
+            "/api/receiver",
+            "/api/status",
+            "/sceptre/api/v1/status",
+            "/"  # Inspect root index directly
+        ]
+
+    def discover_endpoint(self) -> bool:
+        """Probes the SCEPTRE interface to find an operational target endpoint path."""
+        print(f"[DISCOVERY] Probing SCEPTRE instance endpoints on {self.base_url}...")
+        
+        for path in self.candidate_paths:
+            target_url = f"{self.base_url}{path}"
+            try:
+                with urllib.request.urlopen(target_url, timeout=self.timeout) as response:
+                    status = response.status
+                    if status == 200:
+                        raw_data = response.read().decode('utf-8', errors='ignore')
+                        # If it's a structural success, save it
+                        self.validated_endpoint = target_url
+                        print(f"[DISCOVERY] Success! Found responsive route: {target_url}")
+                        return True
+            except urllib.error.HTTPError as e:
+                # Catch 404/500 specifically to explore deeper structure if possible
+                if e.code == 404 and path == "/":
+                    pass 
+            except urllib.error.URLError:
+                # Port closed or interface offline entirely
+                break
+            except Exception:
+                pass
+
+        # Deeper introspection patch if everything fails but port is listening
+        self._try_dump_root_json()
         return False
 
-    def get_live_frequency_mhz(self) -> Optional[float]:
-        """
-        Queries the current active receiver/tuner center frequency.
-        """
+    def _try_dump_root_json(self):
+        """Attempts to print out root JSON maps to diagnose 404 pathing layout blocks."""
         try:
-            # Query the active hardware receiver configuration
-            url = f"{self.base_url}/receiver/tuner"
-            with urllib.request.urlopen(url, timeout=self.timeout) as response:
+            with urllib.request.urlopen(f"{self.base_url}/", timeout=self.timeout) as r:
+                content = r.read().decode('utf-8', errors='ignore')
+                print("\n[DIAGNOSTIC] Root index server content detected:")
+                print(content[:300]) # Print structural fragment to terminal screen
+        except Exception:
+            pass
+
+    def get_live_frequency_mhz(self) -> Optional[float]:
+        """Reads tuning telemetry out of the validated functional API endpoint."""
+        if not self.validated_endpoint:
+            # Try to recover dynamically if connection was dropped
+            if not self.discover_endpoint():
+                return None
+
+        try:
+            with urllib.request.urlopen(self.validated_endpoint, timeout=self.timeout) as response:
                 if response.status == 200:
-                    data = json.loads(response.read().decode('utf-8'))
+                    raw_body = response.read().decode('utf-8')
+                    data = json.loads(raw_body)
                     
-                    # SCEPTRE standard returns frequency values in Hz
-                    if "frequency" in data:
-                        return float(data["frequency"]) / 1e6
-                    elif "center_frequency" in data:
-                        return float(data["center_frequency"]) / 1e6
-                    
-        except urllib.error.URLError:
-            # Suppress excessive network log spamming during active tracking
-            self.is_connected = False
-        except Exception as e:
-            print(f"[LIVE WARNING] Parsing configuration failed: {e}")
-            
+                    # Call nested scanner to locate any numeric frequency tokens inside the JSON response
+                    freq_hz = self._extract_field_recursive(data, ["frequency", "center_freq", "center_frequency", "freq", "tuned_frequency"])
+                    if freq_hz:
+                        # Auto-convert Hz values to MHz scale safely if value scale is huge
+                        return float(freq_hz) / 1e6 if float(freq_hz) > 50000 else float(freq_hz)
+        except Exception:
+            self.validated_endpoint = None # Force rediscover on error break
+        return None
+
+    def _extract_field_recursive(self, data: any, targeted_keys: List[str]) -> Optional[float]:
+        """Deep searches complex JSON nested structures for tuning frequency metrics."""
+        if isinstance(data, dict):
+            for k, v in data.items():
+                if k.lower() in targeted_keys and isinstance(v, (int, float)):
+                    return float(v)
+                res = self._extract_field_recursive(v, targeted_keys)
+                if res is not None:
+                    return res
+        elif isinstance(data, list):
+            for item in data:
+                res = self._extract_field_recursive(item, targeted_keys)
+                if res is not None:
+                    return res
         return None
 
 
 def run_live_analyzer_loop(sceptre_host: str, sceptre_port: int, blanking: str = 'standard'):
-    """Monitors live SCEPTRE signals via HTTP and runs video analysis."""
-    client = LiveSceptreClient(host=sceptre_host, port=sceptre_port)
+    """Active event tracking engine reading from 3dB Labs SCEPTRE platform hooks."""
+    client = AdaptiveSceptreClient(host=sceptre_host, port=sceptre_port)
     analyzer = SceptreVideoAnalyzer(debug=False)
 
     print("\n" + "="*75)
-    print(" 3DB LABS SCEPTRE TO VIDEO EMISSION ANALYZER (REST API)")
+    print(" 3DB LABS SCEPTRE TO VIDEO EMISSION ANALYZER (ADAPTIVE API BRIDGE)")
     print("="*75)
     print("Press Ctrl+C to terminate live capturing loops.\n")
-
-    # Attempt an initial validation connection check
-    if not client.test_connection():
-        print("[CRITICAL] Falling back to passive testing loop...")
-        print("Continuing execution loop. Listening for target endpoint to wake up...")
 
     last_freq = 0.0
     try:
         while True:
             live_freq = client.get_live_frequency_mhz()
             
-            # Process parameters only when tuner detects significant frequency updates
             if live_freq and abs(live_freq - last_freq) > 0.05:
                 print(f"\n[EVENT] Tuner shift detected: {live_freq:.3f} MHz")
                 
-                # Execute analyzer engine code
+                # Forward to fixed structural calculation blocks
                 video_params = analyzer.analyze_frequency(live_freq, blanking_profile=blanking)
                 print(analyzer.format_analysis(video_params))
                 
-                # Track accompanying video harmonics
                 if video_params.detected_harmonics_from_freq:
                     print("\n--> RELATED SUB/HARMONICS TRACKED IN RF PROFILE:")
                     for h in video_params.detected_harmonics_from_freq:
@@ -108,15 +144,14 @@ def run_live_analyzer_loop(sceptre_host: str, sceptre_port: int, blanking: str =
                 
                 last_freq = live_freq
                 
-            time.sleep(0.5)  # Prevents thread polling exhaustion
+            time.sleep(1.0) # Graceful polling cadence to protect network sockets
             
     except KeyboardInterrupt:
         print("\n[SHUTDOWN] Interrupted by operator loop request.")
 
 
 if __name__ == "__main__":
-    # Adjust target address parameters to match your SCEPTRE installation
     TARGET_IP = "127.0.0.1" 
-    TARGET_HTTP_PORT = 8080  # Common ports used by SCEPTRE web control are 8080, 5000, or 8443
+    TARGET_HTTP_PORT = 8080 # Update this parameter if SCEPTRE runs on a specialized local port layout
     
     run_live_analyzer_loop(sceptre_host=TARGET_IP, sceptre_port=TARGET_HTTP_PORT, blanking='standard')
