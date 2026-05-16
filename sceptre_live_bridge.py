@@ -1,98 +1,89 @@
 """
-Sceptre Native REST API Live Bridge
-====================================
-Establishes a direct HTTP loop with 3dB Labs SCEPTRE's integrated REST engine.
-Queries live memory variables to intercept slider frequency adjustments instantly.
+Sceptre Web Interface Extraction Bridge
+=======================================
+Directly captures real-time tuner frequencies from SCEPTRE's active 
+integrated web UI control panel stream running on port 8080.
 """
 
 import urllib.request
 import urllib.error
-import json
+import re
 import time
-from typing import Optional
 from sceptre_video_analyzer import SceptreVideoAnalyzer
 
 
-class SceptreLiveRestAPIClient:
+class SceptreWebInterfaceClient:
     """
-    Interfaces natively with SCEPTRE's automated REST routing endpoints.
+    Scrapes or reads real-time tuner values from the SCEPTRE web workspace front-end.
     """
     def __init__(self, host: str = "127.0.0.1", port: int = 8080, timeout: float = 1.0):
-        self.base_url = f"http://{host}:{port}/api/v1"
+        self.target_url = f"http://{host}:{port}/"
         self.timeout = timeout
-        self.connected_route = None
+        self.is_server_alive = False
 
-    def discover_active_endpoint(self) -> bool:
-        """Probes SCEPTRE's interface architecture to resolve the live tuner route."""
-        # Common structural API paths used across standard SCEPTRE version deployments
-        test_routes = ["/tuner", "/receiver/tuner", "/receiver", "/status"]
-        
-        for route in test_routes:
-            url = f"{self.base_url}{route}"
-            try:
-                req = urllib.request.Request(url, method="GET")
-                with urllib.request.urlopen(req, timeout=self.timeout) as response:
-                    if response.status == 200:
-                        self.connected_route = url
-                        print(f"[REST ENGINE] Linked successfully to active SCEPTRE API: {url}")
-                        return True
-            except Exception:
-                continue
+    def test_web_presence(self) -> bool:
+        """Verifies if the SCEPTRE integrated web server framework is responding."""
+        try:
+            req = urllib.request.Request(self.target_url, method="GET")
+            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                if response.status == 200:
+                    self.is_server_alive = True
+                    return True
+        except Exception:
+            pass
         return False
 
     def get_live_frequency_mhz(self) -> Optional[float]:
         """
-        Polls the validated REST route to parse running tuner frequencies.
+        Pulls down the active web view state and extracts active slider or 
+        tuner frequencies instantly via regular expressions.
         """
-        if not self.connected_route:
-            if not self.discover_active_endpoint():
-                return None
-
         try:
-            req = urllib.request.Request(self.connected_route, method="GET")
+            req = urllib.request.Request(self.target_url, method="GET")
             with urllib.request.urlopen(req, timeout=self.timeout) as response:
-                if response.status == 200:
-                    raw_payload = response.read().decode('utf-8')
-                    data = json.loads(raw_payload)
-                    return self._extract_field_recursive(data)
-        except urllib.error.URLError:
-            self.connected_route = None  # Reset route to trigger rediscovery if link drops
-        except Exception as e:
-            print(f"[REST WARNING] Failed extracting data frame variables: {e}")
+                html_content = response.read().decode('utf-8', errors='ignore')
+                
+            # Scan the web dashboard state block for active tuner frequency numeric parameters
+            # Matches entries like "tuner_frequency": 148500000, frequency = 148.5, or data-freq="148500000"
+            freq_match = re.search(
+                r'(?:tuner_frequency|frequency|tuned_freq|center_freq|cf)\b["\':\s=]+([0-9.]+)', 
+                html_content, 
+                re.IGNORECASE
+            )
+            
+            if freq_match:
+                val = float(freq_match.group(1))
+                # Normalise Hz and kHz readings down to standard MHz scales instantly
+                if val > 1e6:
+                    return val / 1e6
+                elif val > 50000:
+                    return val / 1e3
+                return val
+                
+        except Exception:
+            pass
             
         return None
 
-    def _extract_field_recursive(self, data: any) -> Optional[float]:
-        """Deep parses variable json configurations for running frequencies."""
-        keys = ["tuner_frequency", "frequency", "center_frequency", "center_freq", "freq", "input_frequency"]
-        
-        if isinstance(data, dict):
-            for k, v in data.items():
-                if k.lower() in keys and isinstance(v, (int, float)):
-                    val = float(v)
-                    return val / 1e6 if val > 1e6 else val
-                res = self._extract_field_recursive(v)
-                if res is not None:
-                    return res
-        elif isinstance(data, list):
-            for item in data:
-                res = self._extract_field_recursive(item)
-                if res is not None:
-                    return res
-        return None
 
-
-def run_rest_bridge_loop():
-    client = SceptreLiveRestAPIClient(host="127.0.0.1", port=8080)
+def run_bridge_loop():
+    client = SceptreWebInterfaceClient(host="127.0.0.1", port=8080)
     analyzer = SceptreVideoAnalyzer(debug=False)
 
     print("\n" + "="*75)
-    print(" 3DB LABS SCEPTRE TO VIDEO EMISSION ANALYZER (REST LIVE BRIDGE)")
+    print(" 3DB LABS SCEPTRE TO VIDEO EMISSION ANALYZER (WEB VIEW INTERFACE)")
     print("="*75)
-    print("Connecting to live application memory... Press Ctrl+C to stop.\n")
+    print("Connecting to live server viewport... Press Ctrl+C to terminate loops.\n")
 
+    # Confirm network presence immediately
+    if client.test_web_presence():
+        print(f"[SUCCESS] Linked natively to SCEPTRE Web Server interface on port 8080!")
+    else:
+        print(f"[NOTE] Web port 8080 is quiet. Ensure SCEPTRE's interface is completely loaded.")
+
+    # Drop our initial baseline parameter analysis out on launch
     last_freq = 148.50
-    print(f"[INITIALISATION] Latching onto baseline emission target: {last_freq:.3f} MHz")
+    print(f"\n[INITIALISATION] Latching onto baseline emission target: {last_freq:.3f} MHz")
     params = analyzer.analyze_frequency(last_freq, blanking_profile='standard')
     print(analyzer.format_analysis(params))
 
@@ -103,8 +94,9 @@ def run_rest_bridge_loop():
             live_freq = client.get_live_frequency_mhz()
             
             if live_freq and abs(live_freq - last_freq) > 0.01:
-                print(f"\n[EVENT] Live Software Tuner Adjust Intercepted: {live_freq:.3f} MHz")
+                print(f"\n[EVENT] Live Web Tuner Mutation Intercepted: {live_freq:.3f} MHz")
                 
+                # Forward to timing generation conversion structures
                 params = analyzer.analyze_frequency(live_freq, blanking_profile='standard')
                 print(analyzer.format_analysis(params))
                 
@@ -118,11 +110,11 @@ def run_rest_bridge_loop():
                         
                 last_freq = live_freq
                 
-            time.sleep(0.2)  # Tight 200ms sleep prevents lag during active tuning
+            time.sleep(0.3)  # Rapid 300ms checks handle snappy real-time responsiveness
         except KeyboardInterrupt:
-            print("\n[SHUTDOWN] Terminating API integration link loops.")
+            print("\n[SHUTDOWN] Safely exiting live web monitoring environment loops.")
             break
 
 
 if __name__ == "__main__":
-    run_rest_bridge_loop()
+    run_bridge_loop()
