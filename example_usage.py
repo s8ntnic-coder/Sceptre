@@ -1,208 +1,213 @@
 """
-Sceptre Video Analyzer - Example Usage
-======================================
-Demonstrates how to use the SceptreVideoAnalyzer to analyze video frequencies.
+Sceptre Video Analyzer - Example Usage with Harmonics and Blanking
+===================================================================
+Demonstrates how to use the enhanced analyzer with harmonic detection
+and blanking interval analysis.
 """
 
-from sceptre_video_analyzer import SceptreVideoAnalyzer, SceptreAPIClient, VideoStandard
+from sceptre_video_analyzer import SceptreVideoAnalyzer, VideoStandard
 
 
-def example_1_basic_analysis():
-    """Example 1: Basic frequency analysis"""
-    print("\n" + "="*70)
-    print("EXAMPLE 1: Basic Frequency Analysis")
-    print("="*70)
+def example_1_basic_analysis_with_blanking():
+    """Example 1: Basic frequency analysis with blanking details"""
+    print("\n" + "="*80)
+    print("EXAMPLE 1: Basic Analysis with Blanking Intervals")
+    print("="*80)
     
     analyzer = SceptreVideoAnalyzer()
     
-    # Analyze Full HD 1080p @60Hz frequency
-    params = analyzer.analyze_frequency(148.5)
+    # Analyze Full HD 1080p @60Hz frequency with standard blanking
+    params = analyzer.analyze_frequency(148.5, blanking_profile='standard')
     print(analyzer.format_analysis(params))
 
 
-def example_2_multiple_frequencies():
-    """Example 2: Analyze multiple standard frequencies"""
-    print("\n" + "="*70)
-    print("EXAMPLE 2: Multiple Standard Frequencies")
-    print("="*70)
+def example_2_blanking_profiles_comparison():
+    """Example 2: Compare different blanking profiles (video card variations)"""
+    print("\n" + "="*80)
+    print("EXAMPLE 2: Blanking Profile Comparison (Video Card Variations)")
+    print("="*80)
     
     analyzer = SceptreVideoAnalyzer()
+    frequency = 148.5  # Full HD 1080p @60Hz
+    
+    profiles = ['minimal', 'standard', 'extended']
+    
+    print(f"\nAnalyzing {frequency} MHz with different blanking profiles:\n")
+    print(f"{'Profile':<12} {'H-Total':<10} {'V-Total':<10} {'H-Blank%':<12} {'V-Blank%':<12}")
+    print("-" * 56)
+    
+    for profile in profiles:
+        params = analyzer.analyze_frequency(frequency, blanking_profile=profile)
+        print(f"{profile:<12} {params.horizontal_pixels_total:<10} {params.vertical_lines_total:<10} "
+              f"{params.blanking.h_blanking_percent:<12.2f} {params.blanking.v_blanking_percent:<12.2f}")
+    
+    print("\nNote: Different video cards implement varying blanking intervals.")
+    print("This affects the exact timing but maintains compatibility with the standard.")
+
+
+def example_3_harmonic_detection():
+    """Example 3: Detect harmonics from a frequency"""
+    print("\n" + "="*80)
+    print("EXAMPLE 3: Harmonic Detection")
+    print("="*80)
+    
+    analyzer = SceptreVideoAnalyzer(debug=False)
+    
+    # Analyze a frequency and detect its harmonics
+    frequency = 74.25  # HD 720p @60Hz
+    print(f"\nDetecting harmonics for {frequency} MHz...\n")
+    
+    params = analyzer.analyze_frequency(frequency)
+    
+    if params.detected_harmonics_from_freq:
+        print("Detected Harmonics:")
+        print(f"{'Type':<12} {'Multiplier':<15} {'Frequency':<15} {'Video Mode':<30}")
+        print("-" * 72)
+        
+        for harmonic in params.detected_harmonics_from_freq:
+            h_type = "Subharmonic" if harmonic.is_subharmonic else "Harmonic"
+            multiplier = f"1/{harmonic.harmonic_number}" if harmonic.is_subharmonic else f"{harmonic.harmonic_number}x"
+            mode = harmonic.estimated_parameters.standard_name if harmonic.estimated_parameters else "Unknown"
+            print(f"{h_type:<12} {multiplier:<15} {harmonic.frequency_mhz:<15.2f} {mode:<30}")
+    else:
+        print("No harmonics detected matching known video standards.")
+
+
+def example_4_multiple_frequencies_with_harmonics():
+    """Example 4: Analyze multiple frequencies and show harmonics"""
+    print("\n" + "="*80)
+    print("EXAMPLE 4: Multiple Frequencies with Harmonic Analysis")
+    print("="*80)
+    
+    analyzer = SceptreVideoAnalyzer(debug=False)
     
     frequencies = [
         ("VGA 640x480@60Hz", 25.175),
-        ("SVGA 800x600@60Hz", 40.0),
-        ("XGA 1024x768@60Hz", 65.0),
         ("HD 720p@60Hz", 74.25),
         ("Full HD 1080p@60Hz", 148.5),
-        ("Full HD 1080p@120Hz", 297.0),
         ("4K UHD@60Hz", 594.0),
     ]
     
-    print("\n{:<30} {:<15} {:<15} {:<15}".format(
-        "Standard", "Resolution", "Pixel Clock", "Frame Rate"
-    ))
-    print("-" * 75)
+    print(f"\n{'Standard':<30} {'Frequency':<12} {'Harmonics Found':<20}")
+    print("-" * 62)
     
     for name, freq in frequencies:
         params = analyzer.analyze_frequency(freq)
-        print("{:<30} {:<15} {:<15} {:<15.2f}Hz".format(
-            name,
-            f"{params.resolution_width}x{params.resolution_height}",
-            f"{params.pixel_clock_mhz} MHz",
-            params.frame_rate_hz
-        ))
+        harmonic_count = len(params.detected_harmonics_from_freq)
+        print(f"{name:<30} {freq:<12.2f} {harmonic_count:<20}")
 
 
-def example_3_custom_frequency():
-    """Example 3: Analyze custom/unknown frequency with estimation"""
-    print("\n" + "="*70)
-    print("EXAMPLE 3: Custom Frequency Estimation (CVT-R2)")
-    print("="*70)
+def example_5_detailed_blanking_analysis():
+    """Example 5: Detailed blanking analysis for a specific mode"""
+    print("\n" + "="*80)
+    print("EXAMPLE 5: Detailed Blanking Analysis")
+    print("="*80)
     
     analyzer = SceptreVideoAnalyzer()
     
-    # Analyze an unknown frequency
-    custom_freq = 75.5  # MHz
-    params = analyzer.analyze_frequency(custom_freq)
+    # Full HD 1080p with extended blanking (high-quality setup)
+    params = analyzer.analyze_frequency(148.5, blanking_profile='extended')
     
-    print(f"\nAnalyzing custom frequency: {custom_freq} MHz")
-    if params.is_estimated:
-        print(f"Method: {params.estimated_method}")
-        print(f"Estimated Resolution: {params.resolution_width}x{params.resolution_height}")
-        print(f"Estimated Frame Rate: {params.frame_rate_hz:.2f} Hz")
-        print("(Note: This is an estimate. Actual values depend on the specific signal.)")
-
-
-def example_4_bandwidth_check():
-    """Example 4: Check HDMI bandwidth compatibility"""
-    print("\n" + "="*70)
-    print("EXAMPLE 4: HDMI Bandwidth Compatibility Matrix")
-    print("="*70)
+    print(f"\nFull HD 1080p @60Hz with EXTENDED blanking profile:\n")
     
-    analyzer = SceptreVideoAnalyzer()
-    
-    resolutions = [
-        ("Full HD 1080p@60Hz", 148.5),
-        ("Full HD 1080p@120Hz", 297.0),
-        ("4K UHD@30Hz", 297.0),
-        ("4K UHD@60Hz", 594.0),
-        ("8K FUHD@60Hz", 2376.0),
-    ]
-    
-    print("\n{:<25} {:<15} {:<15} {:<8} {:<8} {:<8}".format(
-        "Resolution", "Pixel Clock", "Bandwidth", "HDMI1.4", "HDMI2.0", "HDMI2.1"
-    ))
-    print("-" * 80)
-    
-    for name, freq in resolutions:
-        params = analyzer.analyze_frequency(freq)
-        bw = analyzer.calculate_bandwidth_requirements(params)
-        
-        hdmi14 = "✓" if bw['hdmi_1_4_compatible'] else "✗"
-        hdmi20 = "✓" if bw['hdmi_2_0_compatible'] else "✗"
-        hdmi21 = "✓" if bw['hdmi_2_1_compatible'] else "✗"
-        
-        print("{:<25} {:<15} {:<15.2f} {:<8} {:<8} {:<8}".format(
-            name,
-            f"{freq} MHz",
-            bw['tmds_bandwidth_gbps'],
-            hdmi14,
-            hdmi20,
-            hdmi21
-        ))
-
-
-def example_5_timing_details():
-    """Example 5: Detailed timing analysis with debug output"""
-    print("\n" + "="*70)
-    print("EXAMPLE 5: Detailed Timing Analysis (Debug Mode)")
-    print("="*70)
-    
-    analyzer = SceptreVideoAnalyzer(debug=True)
-    
-    print("\nAnalyzing 4K UHD@60Hz (594.0 MHz)...\n")
-    params = analyzer.analyze_frequency(594.0)
-    
-    print("\nDetailed Results:")
+    # Active area
+    print("ACTIVE AREA:")
     print(f"  Resolution: {params.resolution_width}x{params.resolution_height}")
-    print(f"  Horizontal Total Pixels: {params.horizontal_pixels_total}")
-    print(f"  Vertical Total Lines: {params.vertical_lines_total}")
+    print(f"  Active Pixels/Line: {params.resolution_width}")
+    print(f"  Active Lines/Frame: {params.resolution_height}")
+    print(f"  Total Active Pixels: {params.resolution_width * params.resolution_height:,}")
+    print()
+    
+    # Horizontal blanking breakdown
+    print("HORIZONTAL BLANKING:")
+    print(f"  Front Porch:  {params.blanking.h_front_porch_pixels} pixels")
+    print(f"  Sync Pulse:   {params.blanking.h_sync_pixels} pixels")
+    print(f"  Back Porch:   {params.blanking.h_back_porch_pixels} pixels")
+    print(f"  Total Blank:  {params.blanking.h_total_blanking} pixels")
+    print(f"  H-Total:      {params.horizontal_pixels_total} pixels")
+    print(f"  Blanking %:   {params.blanking.h_blanking_percent:.2f}%")
+    print()
+    
+    # Vertical blanking breakdown
+    print("VERTICAL BLANKING:")
+    print(f"  Front Porch:  {params.blanking.v_front_porch_lines} lines")
+    print(f"  Sync Pulse:   {params.blanking.v_sync_lines} lines")
+    print(f"  Back Porch:   {params.blanking.v_back_porch_lines} lines")
+    print(f"  Total Blank:  {params.blanking.v_total_blanking} lines")
+    print(f"  V-Total:      {params.vertical_lines_total} lines")
+    print(f"  Blanking %:   {params.blanking.v_blanking_percent:.2f}%")
+    print()
+    
+    # Timing information
+    print("TIMING:")
     print(f"  Scanline Time: {params.scanline_time_us:.4f} µs")
-    print(f"  Frame Duration: {params.frame_duration_us:.2f} µs")
-    print(f"  Frame Rate: {params.frame_rate_hz:.2f} Hz")
-    print(f"  Pixel Rate: {params.pixel_rate_hz:,} Hz")
+    print(f"  Frame Rate:    {params.frame_rate_hz:.2f} Hz")
+    print(f"  Frame Period:  {params.frame_duration_us:.2f} µs")
+    print()
 
 
-def example_6_api_client():
-    """Example 6: SceptreAPIClient usage (placeholder)"""
-    print("\n" + "="*70)
-    print("EXAMPLE 6: Sceptre API Client (Placeholder)")
-    print("="*70)
-    
-    # This is a placeholder for actual hardware integration
-    client = SceptreAPIClient(device_path="/dev/ttyUSB0")
-    
-    print("\nAttempting to connect to Sceptre hardware...")
-    if client.connect():
-        print("✓ Connected to Sceptre")
-        
-        # Get current frequency (placeholder)
-        freq = client.get_current_frequency()
-        if freq:
-            print(f"Current frequency: {freq} MHz")
-            
-            # Analyze the frequency
-            analyzer = SceptreVideoAnalyzer()
-            params = analyzer.analyze_frequency(freq)
-            print(analyzer.format_analysis(params))
-        else:
-            print("Note: get_current_frequency() returns None (placeholder)")
-        
-        client.disconnect()
-        print("✓ Disconnected from Sceptre")
-    else:
-        print("✗ Failed to connect (this is expected - API client is a placeholder)")
-        print("  To enable: Implement actual 3DB Labs API communication in SceptreAPIClient")
-
-
-def example_7_all_standards():
-    """Example 7: Analyze all supported video standards"""
-    print("\n" + "="*70)
-    print("EXAMPLE 7: All Supported Video Standards")
-    print("="*70)
+def example_6_harmonic_to_video_mapping():
+    """Example 6: Map detected harmonics to video modes"""
+    print("\n" + "="*80)
+    print("EXAMPLE 6: Harmonic-to-Video Mode Mapping")
+    print("="*80)
     
     analyzer = SceptreVideoAnalyzer()
     
-    print("\n{:<30} {:<15} {:<15} {:<15}".format(
-        "Standard", "Resolution", "Pixel Clock", "Frame Rate"
-    ))
-    print("-" * 75)
+    # Start with a subharmonic frequency
+    base_freq = 25.175  # VGA 640x480@60Hz
+    
+    print(f"\nStarting frequency: {base_freq} MHz (VGA 640x480@60Hz)\n")
+    print("Possible harmonics and corresponding video modes:")
+    print(f"{'Harmonic':<15} {'Frequency':<15} {'Expected Resolution':<30}")
+    print("-" * 60)
+    
+    for mult in [1, 2, 3, 4, 6, 8]:
+        freq = base_freq * mult
+        params = analyzer.analyze_frequency(freq)
+        
+        if params.standard_name:
+            res = f"{params.resolution_width}x{params.resolution_height}"
+        else:
+            res = f"Estimated: {params.resolution_width}x{params.resolution_height}"
+        
+        print(f"{mult}x (if exist)    {freq:<15.3f} {res:<30}")
+
+
+def example_7_all_standards_with_blanking():
+    """Example 7: All supported standards with blanking analysis"""
+    print("\n" + "="*80)
+    print("EXAMPLE 7: All Supported Standards - Blanking Analysis")
+    print("="*80)
+    
+    analyzer = SceptreVideoAnalyzer()
+    
+    print(f"\n{'Standard':<30} {'H-Blank%':<12} {'V-Blank%':<12} {'H-Total':<10} {'V-Total':<10}")
+    print("-" * 74)
     
     for standard in VideoStandard:
         width, height, freq = standard.value
-        params = analyzer.analyze_frequency(freq)
-        print("{:<30} {:<15} {:<15} {:<15.2f}Hz".format(
-            standard.name,
-            f"{width}x{height}",
-            f"{freq} MHz",
-            params.frame_rate_hz
-        ))
+        params = analyzer.analyze_frequency(freq, blanking_profile='standard')
+        print(f"{standard.name:<30} {params.blanking.h_blanking_percent:<12.2f} "
+              f"{params.blanking.v_blanking_percent:<12.2f} {params.horizontal_pixels_total:<10} "
+              f"{params.vertical_lines_total:<10}")
 
 
 if __name__ == "__main__":
-    print("\n" + "="*70)
-    print("SCEPTRE VIDEO ANALYZER - EXAMPLES")
-    print("="*70)
+    print("\n" + "="*80)
+    print("SCEPTRE VIDEO ANALYZER - ENHANCED EXAMPLES")
+    print("With Harmonic Detection and Blanking Interval Analysis")
+    print("="*80)
     
     # Run all examples
-    example_1_basic_analysis()
-    example_2_multiple_frequencies()
-    example_3_custom_frequency()
-    example_4_bandwidth_check()
-    example_5_timing_details()
-    example_6_api_client()
-    example_7_all_standards()
+    example_1_basic_analysis_with_blanking()
+    example_2_blanking_profiles_comparison()
+    example_3_harmonic_detection()
+    example_4_multiple_frequencies_with_harmonics()
+    example_5_detailed_blanking_analysis()
+    example_6_harmonic_to_video_mapping()
+    example_7_all_standards_with_blanking()
     
-    print("\n" + "="*70)
-    print("Examples completed!")
-    print("="*70)
+    print("\n" + "="*80)
+    print("Enhanced Examples completed!")
+    print("="*80)
