@@ -1,3 +1,4 @@
+"""
 Sceptre Video Analyzer - Enhanced Edition (Fixed)
 ==================================================
 A program to interact with Sceptre oscilloscope from 3DB Labs API.
