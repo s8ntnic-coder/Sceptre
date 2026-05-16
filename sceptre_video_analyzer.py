@@ -1,3 +1,17 @@
+dingo1@dingo1:~/Documents/Sceptre$ python3 example_usage.py
+Traceback (most recent call last):
+  File "/home/dingo1/Documents/Sceptre/example_usage.py", line 8, in <module>
+    from sceptre_video_analyzer import SceptreVideoAnalyzer, VideoStandard
+  File "/home/dingo1/Documents/Sceptre/sceptre_video_analyzer.py", line 1
+    def _match_standard(self, frequency_mhz: float, blanking_profile: str) -> Optional[VideoParameters]:
+IndentationError: unexpected indent
+dingo1@dingo1:~/Documents/Sceptre$ python3 example_usage.py
+Traceback (most recent call last):
+  File "/home/dingo1/Documents/Sceptre/example_usage.py", line 8, in <module>
+    from sceptre_video_analyzer import SceptreVideoAnalyzer, VideoStandard
+  File "/home/dingo1/Documents/Sceptre/sceptre_video_analyzer.py", line 1
+    def _match_standard(self, frequency_mhz: float, blanking_profile: str) -> Optional[VideoParameters]:
+IndentationError: unexpected indent
     def _match_standard(self, frequency_mhz: float, blanking_profile: str) -> Optional[VideoParameters]:
         """Match frequency to known video standard"""
         for known_freq, (name, width, height, pixel_clock) in self.standards_by_frequency.items():
