@@ -9,6 +9,7 @@ import urllib.request
 import urllib.error
 import re
 import time
+from typing import Optional
 from sceptre_video_analyzer import SceptreVideoAnalyzer
 
 
@@ -44,7 +45,6 @@ class SceptreWebInterfaceClient:
                 html_content = response.read().decode('utf-8', errors='ignore')
                 
             # Scan the web dashboard state block for active tuner frequency numeric parameters
-            # Matches entries like "tuner_frequency": 148500000, frequency = 148.5, or data-freq="148500000"
             freq_match = re.search(
                 r'(?:tuner_frequency|frequency|tuned_freq|center_freq|cf)\b["\':\s=]+([0-9.]+)', 
                 html_content, 
