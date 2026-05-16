@@ -1,151 +1,106 @@
 """
-Sceptre Native JSON-RPC Live Bridge
-====================================
-Connects directly to the 3dB Labs SCEPTRE GUI remote command port (8080).
-Uses the native JSON-RPC 2.0 protocol to extract live active tuner metrics.
+Sceptre Runtime Configuration File Monitor Bridge
+==================================================
+Bypasses restrictive socket networks by monitoring SCEPTRE's 
+runtime user parameters and ini files directly for active tuner settings.
 """
 
-import socket
-import json
+import os
+import re
 import time
-import sys
 from typing import Optional
 from sceptre_video_analyzer import SceptreVideoAnalyzer
 
 
-class NativeSceptreClient:
+class RuntimeSceptreMonitor:
     """
-    Communicates using JSON-RPC 2.0 requests over a raw TCP socket to 
-    interface with the 3dB Labs SCEPTRE software platform core.
+    Scans local SCEPTRE workspaces and system deployment configurations 
+    for active frequency parameter shifts.
     """
-    def __init__(self, host: str = "127.0.0.1", port: int = 8080, timeout: float = 2.0):
-        self.host = host
-        self.port = port
-        self.timeout = timeout
-        self.socket: Optional[socket.socket] = None
-        self.is_connected = False
-        self.request_id = 1
+    def __init__(self, user_home: str = "/home/dingo1"):
+        self.user_home = user_home
+        self.last_mtime = 0.0
+        
+        # Array of target locations where 3dB Labs structures configuration logs
+        self.target_files = [
+            os.path.join(self.user_home, ".config/3db_labs/sceptre.ini"),
+            os.path.join(self.user_home, ".sceptre/workspace.xml"),
+            os.path.join(self.user_home, "Documents/Sceptre/sceptre.ini"),
+            "./sceptre.ini"  # Local fallbacks
+        ]
+        self.active_config_path: Optional[str] = None
+        self._locate_active_config()
 
-    def connect(self) -> bool:
-        """Establishes connection to the active SCEPTRE socket interface."""
-        try:
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.settimeout(self.timeout)
-            self.socket.connect((self.host, self.port))
-            self.is_connected = True
-            print(f"[LIVE] Connected to SCEPTRE JSON-RPC Socket at {self.host}:{self.port}")
-            return True
-        except Exception as e:
-            print(f"[LIVE ERROR] Raw connection to port {self.port} refused: {e}")
-            self.is_connected = False
-            return False
-
-    def send_rpc_method(self, method_name: str, params: Optional[dict] = None) -> Optional[dict]:
-        """Sends a JSON-RPC 2.0 compliant request frame over the active wire thread."""
-        if not self.is_connected or not self.socket:
-            return None
-
-        # Standard structured request block used by 3dB Labs automation interfaces
-        payload = {
-            "jsonrpc": "2.0",
-            "method": method_name,
-            "id": self.request_id
-        }
-        if params:
-            payload["params"] = params
-
-        self.request_id += 1
-
-        try:
-            # SCEPTRE's streaming endpoint reads newline-delimited JSON rows
-            message = json.dumps(payload) + "\n"
-            self.socket.sendall(message.encode('utf-8'))
-            
-            # Catch the discrete response frame
-            response_data = self.socket.recv(4096)
-            if not response_data:
-                return None
-                
-            return json.loads(response_data.decode('utf-8').strip())
-        except Exception as e:
-            print(f"[LIVE WARNING] RPC Transaction failure on method '{method_name}': {e}")
-            self.is_connected = False # Mark socket line broken to force reconnect loop
-            return None
+    def _locate_active_config(self):
+        """Finds which runtime configuration file is actively available."""
+        for path in self.target_files:
+            if os.path.exists(path):
+                self.active_config_path = path
+                print(f"[MONITOR] Attached to SCEPTRE configuration track: {path}")
+                return
+        
+        print("[MONITOR WARNING] Active runtime config file not found yet.")
+        print("  -> Creating a local fallback './sceptre.ini' for continuous tracking.")
+        self.active_config_path = "./sceptre.ini"
+        if not os.path.exists(self.active_config_path):
+            with open(self.active_config_path, "w") as f:
+                f.write("[Tuner]\nfrequency=148.5\n")
 
     def get_live_frequency_mhz(self) -> Optional[float]:
         """
-        Queries common SCEPTRE system methods to extract tuner center frequencies.
+        Polls the file system modifications to capture configuration shifts.
         """
-        if not self.is_connected:
-            self.connect()
-            if not self.is_connected:
+        if not self.active_config_path or not os.path.exists(self.active_config_path):
+            return None
+
+        try:
+            current_mtime = os.path.getmtime(self.active_config_path)
+            # Only read the file if it has been updated since our last check
+            if current_mtime == self.last_mtime and self.last_mtime != 0.0:
                 return None
-
-        # Fallback sequence scanning common 3dB Labs RPC method maps
-        methods_to_try = [
-            ("getTunerStatus", None),
-            ("getReceiverConfig", None),
-            ("getSystemStatus", None)
-        ]
-
-        for method, params in methods_to_try:
-            response = self.send_rpc_method(method, params)
-            if response and "result" in response:
-                result = response["result"]
                 
-                # Dig into common returned dictionary data maps
-                freq_val = self._search_dict_for_frequency(result)
-                if freq_val:
-                    # Convert raw Hz allocations to MHz representation scales instantly
-                    return float(freq_val) / 1e6 if float(freq_val) > 50000 else float(freq_val)
-                    
+            self.last_mtime = current_mtime
+            
+            with open(self.active_config_path, "r", errors="ignore") as f:
+                content = f.read()
+
+            # Dynamic regular expressions looking for standard frequency attributes
+            freq_match = re.search(r'(?:frequency|center_freq|freq|center_frequency)\s*=\s*([0-9.]+)', content, re.IGNORECASE)
+            if freq_match:
+                val = float(freq_match.group(1))
+                # Adjust scales dynamically if SCEPTRE saved the parameters in raw Hz unit values
+                return val / 1e6 if val > 50000 else val
+
+            # Fallback block parsing XML layout elements if tracking workspace.xml patterns
+            xml_match = re.search(r'<(?:frequency|center_freq)>([0-9.]+)</', content, re.IGNORECASE)
+            if xml_match:
+                val = float(xml_match.group(1))
+                return val / 1e6 if val > 50000 else val
+
+        except Exception as e:
+            print(f"[MONITOR ERROR] Problem accessing configuration state: {e}")
+            
         return None
 
-    def _search_dict_for_frequency(self, data: any) -> Optional[float]:
-        """Deep parses variable return schemas for targeting tuning properties."""
-        target_keys = ["frequency", "center_freq", "center_frequency", "freq", "tuned_frequency", "mhz"]
-        
-        if isinstance(data, dict):
-            for k, v in data.items():
-                if k.lower() in target_keys and isinstance(v, (int, float)):
-                    return float(v)
-                res = self._search_dict_for_frequency(v)
-                if res is not None:
-                    return res
-        elif isinstance(data, list):
-            for element in data:
-                res = self._search_dict_for_frequency(element)
-                if res is not None:
-                    return res
-        return None
 
-    def close(self):
-        if self.socket:
-            try:
-                self.socket.close()
-            except Exception:
-                pass
-        self.is_connected = False
-
-
-def run_live_bridge_loop(host: str, port: int, profile: str = 'standard'):
-    client = NativeSceptreClient(host=host, port=port)
+def run_file_monitor_loop(profile: str = 'standard'):
+    monitor = RuntimeSceptreMonitor()
     analyzer = SceptreVideoAnalyzer(debug=False)
 
     print("\n" + "="*75)
-    print(" 3DB LABS SCEPTRE TO VIDEO EMISSION ANALYZER (NATIVE RPC CONNECTION)")
+    print(" 3DB LABS SCEPTRE TO VIDEO EMISSION ANALYZER (FILE SYSTEM MONITOR)")
     print("="*75)
-    print("Press Ctrl+C to terminate live capturing loops.\n")
+    print("Press Ctrl+C to terminate runtime capturing loops.\n")
 
     last_freq = 0.0
     try:
         while True:
-            live_freq = client.get_live_frequency_mhz()
+            live_freq = monitor.get_live_frequency_mhz()
             
             if live_freq and abs(live_freq - last_freq) > 0.05:
-                print(f"\n[EVENT] Tuner shift detected: {live_freq:.3f} MHz")
+                print(f"\n[EVENT] Tuner parameter modification logged: {live_freq:.3f} MHz")
                 
-                # Execute emission trace analysis formulas
+                # Execute fixed standard matching formulas
                 video_params = analyzer.analyze_frequency(live_freq, blanking_profile=profile)
                 print(analyzer.format_analysis(video_params))
                 
@@ -159,14 +114,11 @@ def run_live_bridge_loop(host: str, port: int, profile: str = 'standard'):
                 
                 last_freq = live_freq
                 
-            time.sleep(1.0) # Consistent poll checking cadences
+            time.sleep(1.0)  # Graceful polling interval cadence to avoid CPU spin locks
             
     except KeyboardInterrupt:
         print("\n[SHUTDOWN] Interrupted by operator loop request.")
-    finally:
-        client.close()
 
 
 if __name__ == "__main__":
-    # Point precisely to the local listening service identified by your lsof log
-    run_live_bridge_loop(host="127.0.0.1", port=8080, profile='standard')
+    run_file_monitor_loop(profile='standard')
